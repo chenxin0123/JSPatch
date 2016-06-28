@@ -152,12 +152,17 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
         return;
     }
     
+    //创建一个JSContext实例 JSContext是JS代码的执行环境可以给JSContext添加方法，JS就可以直接调用这个方法
     JSContext *context = [[JSContext alloc] init];
     
     context[@"_OC_defineClass"] = ^(NSString *classDeclaration, JSValue *instanceMethods, JSValue *classMethods) {
         return defineClass(classDeclaration, instanceMethods, classMethods);
     };
 
+    /*
+     这样就可以在js中调用_OC_defineProtocol方法
+     JS 通过调用 JSContext 定义的方法把数据传给 OC，OC 通过返回值传回给 JS。调用这种方法，它的参数/返回值 JavaScriptCore 都会自动转换，OC 里的 NSArray, NSDictionary, NSString, NSNumber, NSBlock 会分别转为JS端的数组/对象/字符串/数字/函数类型。
+    */
     context[@"_OC_defineProtocol"] = ^(NSString *protocolDeclaration, JSValue *instProtocol, JSValue *clsProtocol) {
         return defineProtocol(protocolDeclaration, instProtocol,clsProtocol);
     };
@@ -293,6 +298,7 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleMemoryWarning) name:UIApplicationDidReceiveMemoryWarningNotification object:nil];
 #endif
     
+    //找到JSPach.js文件并执行
     NSString *path = [[NSBundle bundleForClass:[self class]] pathForResource:@"JSPatch" ofType:@"js"];
     if (!path) _exceptionBlock(@"can't find JSPatch.js");
     NSString *jsCore = [[NSString alloc] initWithData:[[NSFileManager defaultManager] contentsAtPath:path] encoding:NSUTF8StringEncoding];
@@ -1659,6 +1665,11 @@ static id _formatOCToJSList(NSArray *list)
     return arr;
 }
 
+/*目前没找到方法判断一个 JS 对象是否表示 OC 指针，这里的解决方法是在 OC 把对象返回给 JS 之前，先把它包装成一个 NSDictionary
+ 这样就可以通过判断对象是否有 __obj 属性得知这个对象是否表示 OC 对象指针
+ 
+ 在 __c 函数里若判断到调用者有 __obj 属性，取出这个属性，跟调用的实例方法一起传回给 OC，就完成了实例方法的调用。
+ */
 static NSDictionary *_wrapObj(id obj)
 {
     if (!obj || obj == _nilObj) {

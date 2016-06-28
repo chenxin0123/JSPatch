@@ -1,7 +1,9 @@
+//全局对象this的别名
 var global = this
 
 ;(function() {
 
+  //对象
   var _ocCls = {};
   var _jsCls = {};
 
@@ -58,8 +60,12 @@ var global = this
     return _formatOCToJS(ret)
   }
 
+  //_customMethods 是个对象
   var _customMethods = {
+    //加上 __c 成员，这样所有对象都可以调用到 __c，根据当前对象类型判断进行不同操作
     __c: function(methodName) {
+  
+      //this表示_customMethods对象
       var slf = this
 
       if (slf instanceof Boolean) {
@@ -110,6 +116,7 @@ var global = this
 
       return function(){
         var args = Array.prototype.slice.call(arguments)
+        //_methodFunc把相关信息传给OC，OC用 Runtime 接口调用相应方法，返回结果值，这个调用就结束了。
         return _methodFunc(slf.__obj, slf.__clsName, methodName, args, slf.__isSuper)
       }
     },
@@ -137,10 +144,29 @@ var global = this
 
   for (var method in _customMethods) {
     if (_customMethods.hasOwnProperty(method)) {
+      /*
+       Object.defineProperty(obj, prop, descriptor) 方法直接在一个对象上定义一个新属性，或者修改一个已经存在的属性， 并返回这个对象
+       
+       descriptor 可包含4个属性，如下：
+       configurable 当且仅当这个属性描述符值为 true 时，该属性可能会改变，也可能会被从相应的对象删除。默认为 false。
+       enumerable true 当且仅当该属性出现在相应的对象枚举属性中。默认为 false。
+       value 属性的值
+       writable 定义属性值是否可写。
+       get 一个给属性提供 getter 的方法，如果没有 getter 则为 undefined。方法将返回用作属性的值。默认为 undefined。
+       set 同get一起使用，功能互补。
+       
+       在JavaScript中，所有的对象都是基于 Object；所有的对象都继承了Object.prototype的属性和方法
+       prototype 属性使您有能力向对象添加属性和方法。
+       .prototype 获取该对象的原型 可以理解为class
+       这句话给Object.prototype添加一个method属性
+       */
       Object.defineProperty(Object.prototype, method, {value: _customMethods[method], configurable:false, enumerable: false})
     }
   }
 
+  /**
+   调用 require('UIView') 后，就可以直接使用 UIView 这个变量去调用相应的类方法了，require 做的事很简单，就是在JS全局作用域上创建一个同名变量，变量指向一个对象，对象属性__isCls表明这是一个Class，__clsName保存类名，在调用方法时会用到这两个属性。
+   */
   var _require = function(clsName) {
     if (!global[clsName]) {
       global[clsName] = {
@@ -152,7 +178,10 @@ var global = this
 
   global.require = function(clsNames) {
     var lastRequire
+  //多个类 以逗号分隔
+  //forEach() method calls a provided function once for each element in an array
     clsNames.split(',').forEach(function(clsName) {
+      //调用_require方法
       lastRequire = _require(clsName.trim())
     })
     return lastRequire
