@@ -116,9 +116,16 @@ const static void *JPFixedFlagKey = &JPFixedFlagKey;
 #pragma mark -
 
 static JSContext *_context;
+
+/** 
+ (?<!\\\\) 应该是因为issue#183的原因 commit hash d001e18
+ $1允许你引用前面规则中的第一个截获组 即:.alloc( 中的 alloc
+ */
 static NSString *_regexStr = @"(?<!\\\\)\\.\\s*(\\w+)\\s*\\(";
 static NSString *_replaceStr = @".__c(\"$1\")(";
+
 static NSRegularExpression* _regex;
+//_OC_null
 static NSObject *_nullObj;
 static NSObject *_nilObj;
 static NSMutableDictionary *_registeredStruct;
@@ -152,7 +159,9 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
         return;
     }
     
-    //创建一个JSContext实例 JSContext是JS代码的执行环境可以给JSContext添加方法，JS就可以直接调用这个方法
+    /** 创建一个JSContext实例 JSContext是JS代码的执行环境可以给JSContext添加方法，JS就可以直接调用这个方法
+        JS 通过调用 JSContext 定义的方法把数据传给 OC，OC 通过返回值传会给 JS。调用这种方法，它的参数/返回值 JavaScriptCore 都会自动转换，OC 里的 NSArray, NSDictionary, NSString, NSNumber, NSBlock 会分别转为JS端的数组/对象/字符串/数字/函数类型
+     */
     JSContext *context = [[JSContext alloc] init];
     
     context[@"_OC_defineClass"] = ^(NSString *classDeclaration, JSValue *instanceMethods, JSValue *classMethods) {
@@ -201,6 +210,7 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
         return [[JSContext currentContext][@"_formatOCToJS"] callWithArguments:@[formatOCToJS(obj)]];
     };
     
+    //获取父类名称
     context[@"_OC_superClsName"] = ^(NSString *clsName) {
         Class cls = NSClassFromString(clsName);
         return NSStringFromClass([cls superclass]);
@@ -338,6 +348,13 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
     if (!_regex) {
         _regex = [NSRegularExpression regularExpressionWithPattern:_regexStr options:0 error:nil];
     }
+    
+    /**
+     通过正则把所有方法调用都改成调用 __c() 函数，再执行这个 JS 脚本，做到了类似 OC/Lua/Ruby 等的消息转发机制：
+     UIView.alloc().init()
+     ->
+     UIView.__c('alloc')().__c('init')()
+     */
     NSString *formatedScript = [NSString stringWithFormat:@";(function(){try{%@}catch(e){_OC_catch(e.message, e.stack)}})();", [_regex stringByReplacingMatchesInString:script options:0 range:NSMakeRange(0, script.length) withTemplate:_replaceStr]];
     @try {
         if ([_context respondsToSelector:@selector(evaluateScript:withSourceURL:)]) {
@@ -369,6 +386,15 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
     }
 }
 
+/**
+ *  可以在 JS 动态定义一个新的 struct，只需提供 struct 名，每个字段的类型以及每个字段对应的在 JS 的键值，就可以支持这个 struct 类型在 JS 和 OC 间传递了：
+ 
+ require('JPEngine').defineStruct({
+ "name": "JPDemoStruct",
+ "types": "FldB",
+ "keys": ["a", "b", "c", "d"]
+ })
+ */
 + (void)defineStruct:(NSDictionary *)defineDict
 {
     @synchronized (_context) {
@@ -405,6 +431,7 @@ static void setPropIMP(id slf, SEL selector, id val, NSString *propName) {
     objc_setAssociatedObject(slf, propKey(propName), val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+///先把 Protocol 名解析出来，当 JS 定义的方法在原有类上找不到时，再通过 objc_getProtocol 和 protocol_copyMethodDescriptionList runtime 接口把 Protocol 对应的方法取出来，若匹配上，则按其方法的定义走方法替换的流程。
 static char *methodTypesInProtocol(NSString *protocolName, NSString *selectorName, BOOL isInstanceMethod, BOOL isRequired)
 {
     Protocol *protocol = objc_getProtocol([trim(protocolName) cStringUsingEncoding:NSUTF8StringEncoding]);
@@ -522,6 +549,7 @@ static void addMethodToProtocol(Protocol* protocol, NSString *selectorName, NSSt
     protocol_addMethodDescription(protocol, sel, type, YES, isInstance);
 }
 
+//_OC_defineClass
 static NSDictionary *defineClass(NSString *classDeclaration, JSValue *instanceMethods, JSValue *classMethods)
 {
     NSScanner *scanner = [NSScanner scannerWithString:classDeclaration];
@@ -606,6 +634,7 @@ static NSDictionary *defineClass(NSString *classDeclaration, JSValue *instanceMe
         }
     }
     
+    //用来给OC 对象新增 property
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wundeclared-selector"
     class_addMethod(cls, @selector(getProp:), (IMP)getPropIMP, "@@:@");
@@ -634,7 +663,13 @@ static JSValue *getJSFunctionInObjectHierachy(id slf, NSString *selectorName)
 }
 
 #pragma clang diagnostic pop
-
+/**
+ *  forwardInvocation 的自定义实现 在这里处理js的方法调用
+ 
+    这时已经组装好了一个 NSInvocation，包含了这个调用的参数。
+    在这里把参数从 NSInvocation 反解出来，带着参数调用上述新增加的方法 -JPxxx: ，
+    在这个新方法里取到参数传给JS，调用JS的实现函数。整个调用过程就结束了，整个过程图示如下：
+ */
 static void JPForwardInvocation(__unsafe_unretained id assignSlf, SEL selector, NSInvocation *invocation)
 {
     BOOL deallocFlag = NO;
@@ -642,10 +677,13 @@ static void JPForwardInvocation(__unsafe_unretained id assignSlf, SEL selector, 
     NSMethodSignature *methodSignature = [invocation methodSignature];
     NSInteger numberOfArguments = [methodSignature numberOfArguments];
     
+    //取出selector
     NSString *selectorName = NSStringFromSelector(invocation.selector);
+    //调用_JS%@selector _JP%@ JSPatch的实现 ORIG%@ 原来的实现
     NSString *JPSelectorName = [NSString stringWithFormat:@"_JP%@", selectorName];
     JSValue *jsFunc = getJSFunctionInObjectHierachy(slf, JPSelectorName);
     if (!jsFunc) {
+        //如果转发的方法是我们想改写的，就走我们的逻辑，若不是，就调 -ORIGforwardInvocation: 走原来的流程
         JPExecuteORIGForwardInvocation(slf, selector, invocation);
         return;
     }
@@ -928,6 +966,7 @@ static void JPExecuteORIGForwardInvocation(id slf, SEL selector, NSInvocation *i
         [forwardInv invoke];
     } else {
         Class superCls = [[slf class] superclass];
+        //改变forwardInvocation方法的实现
         Method superForwardMethod = class_getInstanceMethod(superCls, @selector(forwardInvocation:));
         void (*superForwardIMP)(id, SEL, NSInvocation *);
         superForwardIMP = (void (*)(id, SEL, NSInvocation *))method_getImplementation(superForwardMethod);
@@ -944,6 +983,7 @@ static void _initJPOverideMethods(Class cls) {
     }
 }
 
+///替换方法实现 直接指向_objc_msgForward 这样方法调用就会走到forwardInvocation
 static void overrideMethod(Class cls, NSString *selectorName, JSValue *function, BOOL isClassMethod, const char *typeDescription)
 {
     SEL selector = NSSelectorFromString(selectorName);
@@ -956,6 +996,8 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
     IMP originalImp = class_respondsToSelector(cls, selector) ? class_getMethodImplementation(cls, selector) : NULL;
     
     IMP msgForwardIMP = _objc_msgForward;
+    
+    //非arm64
     #if !defined(__arm64__)
         if (typeDescription[0] == '{') {
             //In some cases that returns struct, we should use the '_stret' API:
@@ -970,6 +1012,8 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wundeclared-selector"
+    
+    //将forwardInvocation改为自定义实现
     if (class_getMethodImplementation(cls, @selector(forwardInvocation:)) != (IMP)JPForwardInvocation) {
         IMP originalForwardImp = class_replaceMethod(cls, @selector(forwardInvocation:), (IMP)JPForwardInvocation, "v@:@");
         if (originalForwardImp) {
@@ -986,6 +1030,7 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
         }
     }
     
+    //_JP%@ JSPatch的实现 ORIG%@ 原来的实现
     NSString *JPSelectorName = [NSString stringWithFormat:@"_JP%@", selectorName];
     
     _initJPOverideMethods(cls);
@@ -1014,9 +1059,16 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
         }
     }
 
+    //取得类
     Class cls = instance ? [instance class] : NSClassFromString(className);
     SEL selector = NSSelectorFromString(selectorName);
     
+    
+    /**
+     首先 JS 端需要告诉OC想调用的是当前对象的 super 方法，做法是调用 self.super()时，__c 函数会做特殊处理，返回一个新的对象，这个对象同样保存了 OC 对象的引用，同时标识 __isSuper = 1。
+     
+     再用这个返回的对象去调用方法时，__c 函数会把 __isSuper 这个标识位传给 OC，告诉 OC 要调 super 的方法。OC 做的事情是，如果是调用 super 方法，找到 superClass 这个方法的 IMP 实现，为当前类新增一个方法指向 super 的 IMP 实现，那么调用这个类的新方法就相当于调用 super 方法。把要调用的方法替换成这个新方法，就完成 super 方法的调用了。
+     */
     NSString *superClassName = nil;
     if (isSuper) {
         NSString *superSelectorName = [NSString stringWithFormat:@"SUPER_%@", selectorName];
@@ -1034,7 +1086,7 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
         IMP superIMP = method_getImplementation(superMethod);
         
         class_addMethod(cls, superSelector, superIMP, method_getTypeEncoding(superMethod));
-        
+        //_JP%@ JSPatch的实现 ORIG%@ 原来的实现
         NSString *JPSelectorName = [NSString stringWithFormat:@"_JP%@", selectorName];
         JSValue *overideFunction = _JSOverideMethods[superCls][JPSelectorName];
         if (overideFunction) {
@@ -1092,9 +1144,11 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
         return formatOCToJS(result);
     }
     
+    //typeEncoding 看这里https://developer.apple.com/library/mac/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtPropertyIntrospection.html#//apple_ref/doc/uid/TP40008048-CH101-SW24
     for (NSUInteger i = 2; i < numberOfArguments; i++) {
         const char *argumentType = [methodSignature getArgumentTypeAtIndex:i];
-        id valObj = argumentsObj[i-2];
+        id valObj = argumentsObj[i-2];//self
+        //r const
         switch (argumentType[0] == 'r' ? argumentType[1] : argumentType[0]) {
                 
                 #define JP_CALL_ARG_CASE(_typeString, _type, _selector) \
@@ -1118,7 +1172,7 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 JP_CALL_ARG_CASE('d', double, doubleValue)
                 JP_CALL_ARG_CASE('B', BOOL, boolValue)
                 
-            case ':': {
+            case ':': {//A method selector (SEL)
                 SEL value = nil;
                 if (valObj != _nilObj) {
                     value = NSSelectorFromString(valObj);
@@ -1126,7 +1180,7 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 [invocation setArgument:&value atIndex:i];
                 break;
             }
-            case '{': {
+            case '{': {//structure
                 NSString *typeString = extractStructName([NSString stringWithUTF8String:argumentType]);
                 JSValue *val = arguments[i-2];
                 #define JP_CALL_ARG_STRUCT(_type, _methodName) \
@@ -1153,8 +1207,8 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 
                 break;
             }
-            case '*':
-            case '^': {
+            case '*'://A character string (char *)
+            case '^': {//A pointer to type
                 if ([valObj isKindOfClass:[JPBoxing class]]) {
                     void *value = [((JPBoxing *)valObj) unboxPointer];
                     
@@ -1173,14 +1227,14 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                     break;
                 }
             }
-            case '#': {
+            case '#': {//A class object (Class)
                 if ([valObj isKindOfClass:[JPBoxing class]]) {
                     Class value = [((JPBoxing *)valObj) unboxClass];
                     [invocation setArgument:&value atIndex:i];
                     break;
                 }
             }
-            default: {
+            default: {//@ v [array type] (name=type...)
                 if (valObj == _nullObj) {
                     valObj = [NSNull null];
                     [invocation setArgument:&valObj atIndex:i];
@@ -1466,6 +1520,7 @@ static int sizeOfStructTypes(NSString *structTypes)
     return size;
 }
 
+
 static void getStructDataWithDict(void *structData, NSDictionary *dict, NSDictionary *structDefine)
 {
     NSArray *itemKeys = structDefine[@"keys"];
@@ -1523,6 +1578,10 @@ static void getStructDataWithDict(void *structData, NSDictionary *dict, NSDictio
     }
 }
 
+/**
+ *  这里的实现原理是顺序去取 struct 里每个字段的值，再根据 key 重新包装成 NSDictionary 传给 JS，怎样顺序取 struct 每字段的值呢？可以根据传进来的 struct 字段的变量类型，拿到类型对应的长度，顺序拷贝出 struct 对应位置和长度的值，具体实现
+ *
+ */
 static NSDictionary *getDictOfStruct(void *structData, NSDictionary *structDefine)
 {
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] init];

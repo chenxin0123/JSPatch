@@ -190,7 +190,7 @@
 		36CE19231CB3E709007D73AC /* JPPerformanceTest.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JPPerformanceTest.h; sourceTree = "<group>"; };
 		36CE19241CB3E709007D73AC /* JPPerformanceTest.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = JPPerformanceTest.m; sourceTree = "<group>"; };
 		36CE19261CB3E72B007D73AC /* performanceTest.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = performanceTest.js; sourceTree = "<group>"; };
-		36F0DCC51BFAF41C0090EA4A /* libz.1.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libz.1.dylib; path = ../../../../../../usr/lib/libz.1.dylib; sourceTree = "<group>"; };
+		36F0DCC51BFAF41C0090EA4A /* libz.1.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libz.1.dylib; path = ../../../../../../../../usr/lib/libz.1.dylib; sourceTree = "<group>"; };
 		6C6CAC711C5F0BCA00444348 /* JPSuperTestObject.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = JPSuperTestObject.h; sourceTree = "<group>"; };
 		6C6CAC721C5F0BCA00444348 /* superTest.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = superTest.js; sourceTree = "<group>"; };
 		6C6CAC731C5F0BCA00444348 /* JPSuperTestObject.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = JPSuperTestObject.m; sourceTree = "<group>"; };
@@ -252,6 +252,7 @@
 		2D6D12F91B0B8CF20095A435 /* Supporting Files */ = {
 			isa = PBXGroup;
 			children = (
+				36F0DCC51BFAF41C0090EA4A /* libz.1.dylib */,
 				2D6D12FA1B0B8CF20095A435 /* Images.xcassets */,
 				2D6D12FB1B0B8CF20095A435 /* Info.plist */,
 				2D6D12FC1B0B8CF20095A435 /* main.m */,
@@ -482,7 +483,6 @@
 		DE94AE021AF246BE00E461D4 = {
 			isa = PBXGroup;
 			children = (
-				36F0DCC51BFAF41C0090EA4A /* libz.1.dylib */,
 				DE58B6471B7C312800F64C63 /* JavaScriptCore.framework */,
 				2D5D89161B0B8BFF009382EC /* JSPatchDemo */,
 				DE94AE271AF246C000E461D4 /* JSPatchTests */,
