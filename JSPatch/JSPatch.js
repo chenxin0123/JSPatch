@@ -72,7 +72,11 @@ var global = this
   
       //this表示_customMethods对象
       var slf = this
-      //???布尔变量
+      /**
+       nil 在 JS 里用 null / undefined 表示，造成的后果是无法用 nil 调用方法，也就无法保证链式调用的安全
+        true / false 在 JS 是个对象，是可以调用方法的，如果用 false 表示 nil，即可以做到调用方法，
+       又可以直接通过 if (!obj) 判断是否为 nil，于是沿着这个方向，解决了用 false 表示 nil 带来的各种坑，几乎完美地解决了这个问题。
+       */
       if (slf instanceof Boolean) {
         return function() {
           return false
@@ -374,6 +378,7 @@ var global = this
   
   global.YES = 1
   global.NO = 0
+  //表示NSNull
   global.nsnull = _OC_null
   global._formatOCToJS = _formatOCToJS
   

@@ -10,6 +10,9 @@
 
 @implementation JPMemory
 
+/**
+ *  重写父类的方法
+ */
 + (void)main:(JSContext *)context
 {
     context[@"memset"] = ^void(JSValue *jsVal, int ch,size_t n) {

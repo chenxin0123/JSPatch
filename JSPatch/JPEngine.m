@@ -374,6 +374,11 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
     return _context;
 }
 
+/**
+ *  同时 JSPatch 提供了 +addExtensions: 接口，让 JS 端可以动态加载某个扩展，在需要的时候再给 JS 上下文添加这些 C 函数：
+ 
+ require('JPEngine').addExtensions(['JPMemory'])
+ */
 + (void)addExtensions:(NSArray *)extensions
 {
     if (![JSContext class]) {
@@ -1000,6 +1005,7 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
     //非arm64
     #if !defined(__arm64__)
         if (typeDescription[0] == '{') {
+            //https://github.com/bang590/JSPatch/wiki/JSPatch-实现原理详解 Special Struct
             //In some cases that returns struct, we should use the '_stret' API:
             //http://sealiesoftware.com/blog/archive/2008/10/30/objc_explain_objc_msgSend_stret.html
             //NSMethodSignature knows the detail but has no API to return, we can only get the info from debugDescription.
@@ -1282,6 +1288,9 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
         strcpy(returnType, @encode(float));
     }
 
+    /*
+     当 NSInvocation 调用的是 alloc 时，返回的对象并不会释放，造成内存泄露，只有把返回对象的内存管理权移交出来，让外部对象帮它释放才行
+    */
     id returnValue;
     if (strncmp(returnType, "v", 1) != 0) {
         if (strncmp(returnType, "@", 1) == 0) {

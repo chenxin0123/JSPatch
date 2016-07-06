@@ -67,8 +67,15 @@
 @end
 
 
-
+/**
+ *  JSPatch 需要做的就是为外部提供 JS 运行上下文 JSContext，以及参数转换的方法，最终设计出来的扩展接口是这样
+ */
 @interface JPExtension : NSObject
+/**
+ *  +main 方法暴露了 JSPatch 的运行环境 JSContext 给外部 可以自由在这个 JSContext 上加函数
+ 
+    另外四个 formatXXX 方法都是参数转换方法。上述的 memcpy() 完整的扩展定义如下
+ */
 + (void)main:(JSContext *)context;
 
 + (void *)formatPointerJSToOC:(JSValue *)val;
@@ -92,7 +99,16 @@
 + (NSMutableSet *)includedScriptPaths;
 @end
 
-
+/**
+ *  在使用 JSPatch 过程中发现JS无法调用 NSMutableArray / NSMutableDictionary / NSMutableString 的方法去修改这些对象的数据，
+ 因为这三者都在从 OC 返回到 JS 时 JavaScriptCore 把它们转成了 JS 的 Array / Object / String，在返回的时候就脱离了跟原对象的联系，这个转换在 JavaScriptCore 里是强制进行的，无法选择。
+ 
+ 若想要在对象返回 JS 后，回到 OC 还能调用这个对象的方法，就要阻止 JavaScriptCore 的转换，唯一的方法就是不直接返回这个对象，而是对这个对象进行封装，JPBoxing 就是做这个事情的：
+ 
+ 实际上只有可变的 NSMutableArray / NSMutableDictionary / NSMutableString 这三个类有必要调用它的方法去修改对象里的数据，不可变的 NSArray / NSDictionary / NSString 是没必要这样做的，直接转为 JS 对应的类型使用起来会更方便，但为了规则简单，JSPatch 让 NSArray / NSDictionary / NSString 也同样以封装的方式返回，避免在调用 OC 方法返回对象时还需要关心它返回的是可变还是不可变对象。
+ 
+ 对于参数和返回值是C指针和 Class 类型的支持同样是用 JPBoxing 封装的方式，把指针和 Class 作为成员保存在 JPBoxing 对象上返回给 JS，传回 OC 时再解出来拿到原来的指针和 Class，这样 JSPatch 就支持所有数据类型 OC<->JS 的互传了。
+ */
 
 @interface JPBoxing : NSObject
 @property (nonatomic) id obj;
