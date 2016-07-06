@@ -112,8 +112,11 @@ var global = this
           return _ocCls[clsName][methodType][methodName].bind(slf)
         }
 
+        //如果是添加的属性 不经过OC 直接执行属性的getter 和 setter方法
         if (slf.__obj && _ocCls[clsName]['props'][methodName]) {
+          //__ocProps保存自定义属性
           if (!slf.__ocProps) {
+            //第一次执行还是会经过OC
             var props = _OC_getCustomProps(slf.__obj)
             if (!props) {
               props = {}
@@ -123,7 +126,9 @@ var global = this
           }
           var c = methodName.charCodeAt(3);
           if (methodName.length > 3 && methodName.substr(0,3) == 'set' && c >= 65 && c <= 90) {
+            //setter
             return function(val) {
+              //属性名称
               var propName = methodName[3].toLowerCase() + methodName.substr(4)
               slf.__ocProps[propName] = val
             }
@@ -154,6 +159,11 @@ var global = this
       return {__obj: slf.__obj, __clsName: slf.__clsName, __isSuper: 1}
     },
 
+    /**
+     http://blog.cnbang.net/tech/3038/
+     解决多线程问题
+     不直接去调用，而是直接 return 返回一个对象 {obj}
+     */
     performSelectorInOC: function() {
       var slf = this
       var args = Array.prototype.slice.call(arguments)
@@ -256,6 +266,7 @@ var global = this
     }
   }
 
+  //在 JS 端用一个表保存 className 对应的 JS 方法，调用时如果在这个表找到要调用的方法，就直接调用，不再去到 OC
   var _setupJSMethod = function(className, methods, isInst, realClsName) {
     for (var name in methods) {
       var key = isInst ? 'instMethods': 'clsMethods',
@@ -315,6 +326,22 @@ var global = this
     return require(className)
   }
 
+  /**
+   于是若想添加一些指定参数类型的方法，只需动态新增一个 protocol，定义新增的方法名和对应的参数类型，再在 defineClass() 定义里加上这个 protocol 就可以了。这样的不污染 defineClass() 的接口，也没有更多概念，十分简洁地解决了这问题。范例：
+   defineProtocol('JPDemoProtocol',{
+   stringWithRect_withNum_withArray: {
+   paramsType:"CGRect, float, NSArray*",
+   returnType:"id",
+   },
+   }
+   
+   defineClass('JPTestObject : NSObject <JPDemoProtocol>', {
+   stringWithRect_withNum_withArray:function(rect, num, arr){
+   //use rect/num/arr params here
+   return @"success";
+   },
+   }
+   */
   global.defineProtocol = function(declaration, instProtos , clsProtos) {
       var ret = _OC_defineProtocol(declaration, instProtos,clsProtos);
       return ret
@@ -347,6 +374,12 @@ var global = this
     }
   }
 
+  /** 辅助创建纯 JS 类
+   defineJSClass与defineClass几乎一样 只有有两个地方不同：
+   1.用 this 关键字代替 self
+   2.property 不用 getter/setter，直接存取。
+   这种方式定义类和使用是比 defineClass() 性能高的，推荐不需要继承 OC 类时都用这个接口
+   */
   global.defineJSClass = function(declaration, instMethods, clsMethods) {
     var o = function() {},
         a = declaration.split(':'),

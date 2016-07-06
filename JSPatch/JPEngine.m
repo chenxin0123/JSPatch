@@ -136,7 +136,12 @@ static BOOL _convertOCNumberToString;
 static NSString *_scriptRootDir;
 static NSMutableSet *_runnedScript;
 
+/**
+ *  在 JSPatch 核心里所有替换的方法都会保存在内部一个静态变量 _JSOverideMethods 里，
+    它的结构是 _JSOverideMethods[cls][selectorName] = jsFunction。
+ */
 static NSMutableDictionary *_JSOverideMethods;
+
 static NSMutableDictionary *_TMPMemoryPool;
 static NSMutableDictionary *_propKeys;
 static NSMutableDictionary *_JSMethodSignatureCache;
@@ -216,7 +221,7 @@ void (^_exceptionBlock)(NSString *log) = ^void(NSString *log) {
         Class cls = NSClassFromString(clsName);
         return NSStringFromClass([cls superclass]);
     };
-    
+    //可以自由开启和关闭自动类型转换 http://blog.cnbang.net/tech/3123/
     context[@"autoConvertOCType"] = ^(BOOL autoConvert) {
         _autoConvert = autoConvert;
     };
@@ -455,6 +460,9 @@ static char *methodTypesInProtocol(NSString *protocolName, NSString *selectorNam
     return NULL;
 }
 
+/**
+ 通过运行时定义新的协议
+ */
 static void defineProtocol(NSString *protocolDeclaration, JSValue *instProtocol, JSValue *clsProtocol)
 {
     const char *protocolName = [protocolDeclaration UTF8String];
@@ -532,6 +540,7 @@ static void addGroupMethodsToProtocol(Protocol* protocol,JSValue *groupMethods,B
                     NSString *argStr = trim([argStrArr objectAtIndex:i]);
                     NSString *argEncode = _protocolTypeEncodeDict[argStr];
                     if (!argEncode) {
+                        //判断是否是一个id对象
                         NSString *argClassName = trim([argStr stringByReplacingOccurrencesOfString:@"*" withString:@""]);
                         if (NSClassFromString(argClassName) != NULL) {
                             argEncode = @"@";
@@ -613,10 +622,14 @@ static NSDictionary *defineClass(NSString *classDeclaration, JSValue *instanceMe
             }
             
             JSValue *jsMethod = jsMethodArr[1];
+            
             if (class_respondsToSelector(currCls, NSSelectorFromString(selectorName))) {
+                //方法是否已经实现 已经实现则进行覆盖 如果不存在
                 overrideMethod(currCls, selectorName, jsMethod, !isInstance, NULL);
             } else {
+                //查找是否指定了protocol YES则从protocol中寻找匹配的方法进行覆盖或新增
                 BOOL overrided = NO;
+                
                 for (NSString *protocolName in protocols) {
                     char *types = methodTypesInProtocol(protocolName, selectorName, isInstance, YES);
                     if (!types) types = methodTypesInProtocol(protocolName, selectorName, isInstance, NO);
@@ -628,6 +641,15 @@ static NSDictionary *defineClass(NSString *classDeclaration, JSValue *instanceMe
                     }
                 }
                 if (!overrided) {
+                    //当使用defineClass对新方法命名的时候，defineClass能通过_自动识别参数的位置和个数，但是并没有能识别参数的类型
+                    /**
+                     而在通过这段代码创建新方法的时候，需要输入方法的type encode，由于defineClass只有参数的个数和位置信息，并未获得参数的类型，因此JsPatch默认要求新方法所有输入的参数都是id类型，返回的参数也必须是id类型，通过@@:+参数数量个@来生成，只允许id类型的参数及返回的新方法
+                     
+                     文／唯敬（简书作者）
+                     原文链接：http://www.jianshu.com/p/564bdb35f3f3
+                     著作权归作者所有，转载请联系作者获得授权，并标注“简书作者”。
+                     
+                     */
                     if (![[jsMethodName substringToIndex:1] isEqualToString:@"_"]) {
                         NSMutableString *typeDescStr = [@"@@:" mutableCopy];
                         for (int i = 0; i < numberOfArg; i ++) {
@@ -674,7 +696,7 @@ static JSValue *getJSFunctionInObjectHierachy(id slf, NSString *selectorName)
  
     这时已经组装好了一个 NSInvocation，包含了这个调用的参数。
     在这里把参数从 NSInvocation 反解出来，带着参数调用上述新增加的方法 -JPxxx: ，
-    在这个新方法里取到参数传给JS，调用JS的实现函数。整个调用过程就结束了，整个过程图示如下：
+    在这个新方法里取到参数传给JS，调用JS的实现函数。整个调用过程就结束了
  */
 static void JPForwardInvocation(__unsafe_unretained id assignSlf, SEL selector, NSInvocation *invocation)
 {
@@ -698,6 +720,9 @@ static void JPForwardInvocation(__unsafe_unretained id assignSlf, SEL selector, 
     if ([slf class] == slf) {
         [argList addObject:[JSValue valueWithObject:@{@"__clsName": NSStringFromClass([slf class])} inContext:_context]];
     } else if ([selectorName isEqualToString:@"dealloc"]) {
+        /** 在 dealloc 过程中对象不能赋给一个 weak 变量，无法包装成一个 weakObject 给 JS 
+         调用 -dealloc 时 self 不包装成 weakObject，而是包装成 assignObject 传给 JS，解决了crash问题。
+         */
         [argList addObject:[JPBoxing boxAssignObj:slf]];
         deallocFlag = YES;
     } else {
@@ -822,6 +847,11 @@ static void JPForwardInvocation(__unsafe_unretained id assignSlf, SEL selector, 
     }
 
     switch (returnType[0] == 'r' ? returnType[1] : returnType[0]) {
+            /**
+             JS 函数返回这个对象，JS 的调用就结束了，JavaScriptCore 的锁也就释放了。在 OC 可以拿到 JS 函数的返回值，也就拿到了这个对象，然后判断它是否 __isPerformInOC=1 对象，若是就根据对象里的 selector / 参数等信息调用对应的 OC 方法，这时这个 OC 方法的调用是在 JavaScriptCore 的锁之外调用的，我们的目的就达到了。
+             
+             执行 OC 方法后，会去调 {obj} 里的的 cb 函数，把 OC 方法的返回值传给 cb 函数，重新回到 JS 去执行代码。这里会循环判断这些回调函数是否还返回 __isPerformInOC=1 的对象，若是则重复上述流程执行，不是则结束。
+             */
         #define JP_FWD_RET_CALL_JS \
             JSValue *jsval; \
             [_JSMethodForwardCallLock lock];   \
@@ -943,11 +973,18 @@ static void JPForwardInvocation(__unsafe_unretained id assignSlf, SEL selector, 
         _pointersToRelease = nil;
     }
     
+    /**
+     
+     调用 ORIGdealloc 时因为 selectorName 改变，ARC 不认这是 dealloc 方法，于是用下面的方式调用：
+     ARC 就能认得这个方法是 dealloc，做相应处理了
+     */
     if (deallocFlag) {
         slf = nil;
         Class instClass = object_getClass(assignSlf);
+        //取出原来的实现
         Method deallocMethod = class_getInstanceMethod(instClass, NSSelectorFromString(@"ORIGdealloc"));
         void (*originalDealloc)(__unsafe_unretained id, SEL) = (__typeof__(originalDealloc))method_getImplementation(deallocMethod);
+        //调用时改用dealloc
         originalDealloc(assignSlf, NSSelectorFromString(@"dealloc"));
     }
 }
@@ -1680,6 +1717,10 @@ static NSString *convertJPSelectorString(NSString *selectorString)
 
 #pragma mark - Object format
 
+/**
+ *  以数组为例，OC NSArray 数组传回给 JS 时都会当成一个普通的 OC 对象，可以调用它的 OC 方法(像 -objectAtIndex)，而 JS 上创建的数组是 JS 数组，可以用 [] 取数组元素，不能调用 OC 方法。JS 数组传入 OC 会自动转为 NSArray，传出来会变成 NSArray。于是在 JS 端数组就会有两种类型，你知道某个变量是数组后，还需要知道它是从哪里来的，以此判断它的类型，再用相应的方法
+ *
+ */
 static id formatOCToJS(id obj)
 {
     if ([obj isKindOfClass:[NSString class]] || [obj isKindOfClass:[NSDictionary class]] || [obj isKindOfClass:[NSArray class]] || [obj isKindOfClass:[NSDate class]]) {
